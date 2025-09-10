@@ -1,0 +1,30 @@
+# 数据集配置
+dataset:
+  name: "ett_small_1h"
+  freq: "h"
+
+# Mean Model 配置
+mean_model:
+  context_length: 336
+  prediction_length: 24
+  max_epochs: 80
+  model_type: "PatchTST"  # 可选: PatchTST, DLinear
+  patch_len: 16
+  save_path: "mean_predictions.npy"
+
+# Log Model 配置
+log_model:
+  context_length: 24
+  prediction_length: 1
+  max_epochs: 50
+  model_type: "SimpleFeedForward"
+
+# 采样配置
+sampling:
+  num_samples: 100
+
+# 路径配置
+paths:
+  results_dir: "res/"
+  models_dir: "res/models/"
+  predictions_dir: "res/predictions/"
