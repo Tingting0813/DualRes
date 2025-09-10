@@ -29,7 +29,6 @@ def load_config(config_path: str) -> dict:
         config = yaml.safe_load(f)
     return config
 
-# test push from ddd
 def main(args):
     """主函数"""
     # 设置日志
