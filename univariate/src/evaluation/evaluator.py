@@ -43,35 +43,27 @@ class ModelEvaluator:
         agg_metrics, item_metrics = self.evaluator(tss, forecasts, num_series=num_series)
         
         logger.info("Evaluation metrics:")
-        for key in ["MSE", "RMSE", "MASE", "sMAPE", "ND", "NRMSE", "CRPS"]:
+        for key in ["Coverage[0.9]", "MSE", "RMSE","NRMSE", "ND", "MAE_Coverage", "mean_wQuantileLoss"]:
             if key in agg_metrics:
                 logger.info(f"  {key}: {agg_metrics[key]:.4f}")
         
         return agg_metrics, item_metrics
     
     def evaluate_sample_forecast(self, final_res: np.ndarray, 
-                                test_data: List, 
+                                tss: List, 
                                 prediction_length: int) -> Tuple[Dict, pd.DataFrame]:
         """
         评估采样预测结果
         
         Args:
             final_res: 最终预测结果 (num_samples, num_series, prediction_length)
-            test_data: 测试数据
+            tts: 预测值
             prediction_length: 预测长度
             
         Returns:
             评估指标
         """
         num_samples, num_series, _ = final_res.shape
-        
-        # 构造时间序列
-        tss = []
-        for entry in test_data:
-            tss.append(pd.Series(entry["target"], 
-                               index=pd.date_range(start=entry["start"].to_timestamp(),
-                                                  periods=len(entry["target"]),
-                                                  freq=self.config['dataset']['freq'])))
         
         # 构造SampleForecast对象
         forecast_list = []

@@ -13,6 +13,7 @@ from src.models.mean_model import MeanModel
 from src.models.log_model import LogModel
 from src.training.trainer import Trainer
 from src.evaluation.evaluator import ModelEvaluator
+from src.utils.path_manager import PathManager, setup_experiment_paths
 
 # 配置日志
 def setup_logging(log_level="INFO"):
@@ -39,9 +40,22 @@ def main(args):
     logger.info(f"Loading config from {args.config}")
     config = load_config(args.config)
     
-    # 创建必要的目录
-    for path_key in config['paths'].values():
-        os.makedirs(path_key, exist_ok=True)
+    # # 创建必要的目录
+    # for path_key in config['paths'].values():
+    #     os.makedirs(path_key, exist_ok=True)
+
+    # 创建路径管理器
+    path_manager = PathManager()
+    # 为这次实验创建目录
+    exp_dir = path_manager.create_experiment_dir(config)
+    # 更新配置中的路径
+    config['paths'] = {
+        'results_dir': str(exp_dir),
+        'models_dir': str(exp_dir / "models"),
+        'predictions_dir': str(exp_dir / "predictions"),
+        'plots_dir': str(exp_dir / "plots")
+    }
+    logger.info(f"Experiment directory: {exp_dir}")
     
     # 初始化组件
     logger.info("Initializing components...")
@@ -62,22 +76,22 @@ def main(args):
         logger.info("=" * 50)
         logger.info("Training Mean Model...")
         trainer.train_mean_model(force_retrain=args.force_retrain)
-        
+    
         # 评估Mean Model
         if args.evaluate:
             logger.info("Evaluating Mean Model...")
-            forecasts, tss = mean_model.predict(data_loader.test_data, num_samples=1)
-            agg_metrics, _ = evaluator.evaluate_predictions(forecasts, tss)
-            logger.info(f"Mean Model metrics: {agg_metrics}")
+            forecasts, tss = mean_model.predict(data_loader.test_data, num_samples=config['sampling']['num_samples'])
+            mean_agg_metrics, _ = evaluator.evaluate_predictions(forecasts, tss)
+            logger.info(f"Mean Model metrics: {mean_agg_metrics}")
             
             # 可视化
             if args.visualize:
                 evaluator.plot_prediction(
                     forecasts, tss, 
                     series_idx=0,
-                    save_path=os.path.join(config['paths']['results_dir'], 'mean_model_prediction.png')
+                    save_path=os.path.join(config['paths']['plots_dir'], 'mean_model_prediction.png')
                 )
-        
+            
         # 生成Mean Model预测（用于Log Model训练）
         logger.info("Generating mean model predictions for log model training...")
         mean_predictions = trainer.generate_mean_predictions()
@@ -90,11 +104,11 @@ def main(args):
         logger.info("=" * 50)
         logger.info("Training Log Model...")
         trainer.train_log_model(loss_dataset, force_retrain=args.force_retrain)
-        
+          
         # 生成Log Model预测
         logger.info("Generating log model predictions...")
         log_predictions_df = log_model.predict_log_values(loss_dataset)
-        
+    
         # 计算yita值
         logger.info("Calculating yita values...")
         mean_data_df = pd.read_csv(
@@ -108,38 +122,25 @@ def main(args):
             logger.info("Plotting ACF...")
             evaluator.plot_acf(
                 mean_data_df,
-                save_path=os.path.join(config['paths']['results_dir'], 'acf_plot.png')
+                save_path=os.path.join(config['paths']['plots_dir'], 'acf_plot.png')
             )
     
     if args.mode == 'predict' or args.mode == 'all':
         # 确保模型已加载
         logger.info("=" * 50)
         logger.info("Loading models for prediction...")
-        
+
         if mean_model.predictor is None:
             mean_model.load_predictor()
         if log_model.predictor is None:
-            log_model_path = os.path.join(
-                config['paths']['models_dir'],
-                f"log_{log_model.model_type}_{log_model.context_length}_{log_model.prediction_length}_{log_model.max_epochs}"
-            )
-            if os.path.exists(log_model_path):
-                log_model.predictor = Predictor.deserialize(Path(log_model_path))
-            else:
-                logger.error("Log model not found. Please train first.")
-                return
+            log_model.load_predictor()
         
-        # 加载yita值
-        logger.info("Loading yita values...")
-        yita_df = pd.read_csv(
-            os.path.join(config['paths']['results_dir'],
-                        f"all_yita_array_{log_model.context_length}_{log_model.prediction_length}_{log_model.max_epochs}.csv"),
-            header=None
-        )
         
         # 重采样
         logger.info("Resampling yita values...")
-        all_samples = trainer.resample_yita(yita_df)
+        yita_save_path=os.path.join(config['paths']['results_dir'],
+                            f"all_yita_array_{log_model.context_length}_{log_model.prediction_length}_{log_model.max_epochs}.csv")
+        all_samples = trainer.resample_yita(yita_save_path)
         
         # 执行滚动预测
         logger.info("Performing rolling forecast...")
@@ -149,19 +150,20 @@ def main(args):
         if args.evaluate:
             logger.info("=" * 50)
             logger.info("Evaluating final predictions...")
-            agg_metrics, item_metrics = evaluator.evaluate_sample_forecast(
+            mean_forecasts, tss = mean_model.predict(data_loader.test_data, num_samples=config['sampling']['num_samples'])
+            our_agg_metrics, _ = evaluator.evaluate_sample_forecast(
                 final_res, 
-                data_loader.test_data,
+                tss,
                 mean_model.prediction_length
             )
-            logger.info(f"Final model metrics: {agg_metrics}")
+            logger.info(f"Final model metrics: {our_agg_metrics}")
             
-            # 保存评估结果
-            import json
-            metrics_path = os.path.join(config['paths']['results_dir'], 'final_metrics.json')
-            with open(metrics_path, 'w') as f:
-                json.dump(agg_metrics, f, indent=2)
-            logger.info(f"Metrics saved to {metrics_path}")
+
+            # 保存结果到实验目录和全局文件
+            if args.mode == 'predict':
+                logger.info(f"Mean Model metrics: ReCalculate...")
+                mean_agg_metrics, _ = evaluator.evaluate_predictions(mean_forecasts, tss)
+            path_manager.save_experiment_results(exp_dir, mean_agg_metrics, our_agg_metrics, config)
         
         # 可视化最终结果
         if args.visualize:
@@ -171,9 +173,9 @@ def main(args):
                 data_loader.test_data,
                 series_idx=args.series_idx,
                 prediction_length=mean_model.prediction_length,
-                save_path=os.path.join(config['paths']['results_dir'], 'final_forecast.png')
+                save_path=os.path.join(config['paths']['plots_dir'], 'final_forecast.png')
             )
-    
+        
     logger.info("=" * 50)
     logger.info("Process completed successfully!")
 

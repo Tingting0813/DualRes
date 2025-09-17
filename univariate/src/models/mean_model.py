@@ -10,6 +10,7 @@ from gluonts.model.predictor import Predictor
 from gluonts.evaluation import make_evaluation_predictions
 from gluonts.torch.model.patch_tst import PatchTSTEstimator
 from gluonts.torch.model.d_linear import DLinearEstimator
+from gluonts.torch import DeepAREstimator
 from gluonts.dataset.common import ListDataset
 from tqdm import tqdm
 import logging
@@ -32,13 +33,14 @@ class MeanModel:
         self.context_length = self.mean_config['context_length']
         self.prediction_length = self.mean_config['prediction_length']
         self.max_epochs = self.mean_config['max_epochs']
-        self.model_type = self.mean_config.get('model_type', 'PatchTST')
+        self.model_type = self.mean_config.get('model_type')
         self.freq = config['dataset']['freq']
         self.predictor = None
         
         # 模型保存路径
         self.model_name = f'mean_{self.model_type}_{self.context_length}_{self.prediction_length}_{self.max_epochs}'
         self.model_path = os.path.join(config['paths']['models_dir'], self.model_name)
+        logger.info(f'wangme test {self.model_name} and {self.model_path}')
         
     def _create_estimator(self):
         """创建估计器"""
@@ -52,6 +54,13 @@ class MeanModel:
         elif self.model_type == 'DLinear':
             return DLinearEstimator(
                 prediction_length=self.prediction_length,
+                context_length=self.context_length,
+                trainer_kwargs={"max_epochs": self.max_epochs}
+            )
+        elif self.model_type == 'DeepAR':
+            return DeepAREstimator(
+                prediction_length=self.prediction_length,
+                freq=self.freq,
                 context_length=self.context_length,
                 trainer_kwargs={"max_epochs": self.max_epochs}
             )
@@ -90,6 +99,7 @@ class MeanModel:
         Returns:
             预测结果和时间序列
         """
+        self.load_predictor()
         if self.predictor is None:
             raise ValueError("Model not trained yet. Please call train() first.")
         
@@ -152,20 +162,20 @@ class MeanModel:
         else:
             raise FileNotFoundError(f"Model not found at {self.model_path}")
     
-    def evaluate(self, forecasts: List, tss: List) -> Dict:
-        """
-        评估模型性能
+    # def evaluate(self, forecasts: List, tss: List) -> Dict:
+    #     """
+    #     评估模型性能
         
-        Args:
-            forecasts: 预测结果
-            tss: 真实时间序列
+    #     Args:
+    #         forecasts: 预测结果
+    #         tss: 真实时间序列
             
-        Returns:
-            评估指标
-        """
-        from gluonts.evaluation import Evaluator
+    #     Returns:
+    #         评估指标
+    #     """
+    #     from gluonts.evaluation import Evaluator
         
-        evaluator = Evaluator()
-        agg_metrics, item_metrics = evaluator(tss, forecasts)
+    #     evaluator = Evaluator()
+    #     agg_metrics, item_metrics = evaluator(tss, forecasts)
         
-        return agg_metrics, item_metrics
+    #     return agg_metrics, item_metrics

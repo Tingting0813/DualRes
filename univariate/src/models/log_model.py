@@ -41,7 +41,7 @@ class LogModel:
     
     def calculate_log_mse(self, true_values: np.ndarray, pred_values: np.ndarray, 
                          mean_context_length: int, dataset_name: str, 
-                         timestamps: pd.DatetimeIndex = None) -> pd.DataFrame:
+                         timestamps: pd.DatetimeIndex = None, force_recalculate: bool = False) -> pd.DataFrame:
         """
         计算log-MSE损失
         
@@ -55,6 +55,17 @@ class LogModel:
         Returns:
             包含log-MSE的DataFrame
         """
+
+        # 检查结果文件是否已存在
+        save_path = os.path.join(self.config['paths']['results_dir'], 
+                                 f'{dataset_name}_log_mse_losses.csv')
+        
+        if os.path.exists(save_path) and not force_recalculate:
+            logger.info(f"Loading existing log_mse from {save_path}")
+            return pd.read_csv(save_path)
+        
+        logger.info("Calculating new log_mse values...")
+
         all_records = []
         
         for i in range(len(true_values)):
@@ -84,8 +95,6 @@ class LogModel:
         df = pd.DataFrame(all_records)
         
         # 保存结果
-        save_path = os.path.join(self.config['paths']['results_dir'], 
-                                 f'{dataset_name}_log_mse_losses.csv')
         df.to_csv(save_path, index=False)
         logger.info(f"Log-MSE losses saved to {save_path}")
         
@@ -121,7 +130,7 @@ class LogModel:
             self.predictor.serialize(Path(self.model_path))
             logger.info(f"Model saved to {self.model_path}")
     
-    def predict_log_values(self, loss_dataset: ListDataset) -> pd.DataFrame:
+    def predict_log_values(self, loss_dataset: ListDataset, force_recalculate: bool = False) -> pd.DataFrame:
         """
         预测log值
         
@@ -133,6 +142,18 @@ class LogModel:
         """
         if self.predictor is None:
             raise ValueError("Model not trained yet. Please call train() first.")
+        
+        # 检查结果文件是否已存在
+        save_path = os.path.join(
+            self.config['paths']['results_dir'],
+            f'log_true_vs_pred_{self.context_length}_{self.prediction_length}_{self.max_epochs}.csv'
+        )
+        
+        if os.path.exists(save_path) and not force_recalculate:
+            logger.info(f"Loading existing log_predict_values from {save_path}")
+            return pd.read_csv(save_path)
+        
+        logger.info("Calculating new log_predict_values values...")
         
         all_records = []
         
@@ -168,17 +189,13 @@ class LogModel:
         df = pd.DataFrame(all_records)
         
         # 保存结果
-        save_path = os.path.join(
-            self.config['paths']['results_dir'],
-            f'log_true_vs_pred_{self.context_length}_{self.prediction_length}_{self.max_epochs}.csv'
-        )
         df.to_csv(save_path, index=False)
         logger.info(f"Log predictions saved to {save_path}")
         
         return df
     
     def calculate_yita(self, mean_data_df: pd.DataFrame, 
-                      log_data_df: pd.DataFrame) -> pd.DataFrame:
+                      log_data_df: pd.DataFrame, force_recalculate: bool = False) -> pd.DataFrame:
         """
         计算yita值
         
@@ -189,6 +206,18 @@ class LogModel:
         Returns:
             yita值DataFrame
         """
+        # 检查结果文件是否已存在
+        save_path = os.path.join(
+            self.config['paths']['results_dir'],
+            f'all_yita_array_{self.context_length}_{self.prediction_length}_{self.max_epochs}.csv'
+        )
+        
+        if os.path.exists(save_path) and not force_recalculate:
+            logger.info(f"Loading existing yita values from {save_path}")
+            return pd.read_csv(save_path)
+        
+        logger.info("Calculating new yita values...")
+
         all_yita = []
         
         for series_id, group_df in log_data_df.groupby("series_id"):
@@ -202,11 +231,15 @@ class LogModel:
         df_yita = pd.DataFrame(all_yita)
         
         # 保存结果
-        save_path = os.path.join(
-            self.config['paths']['results_dir'],
-            f'all_yita_array_{self.context_length}_{self.prediction_length}_{self.max_epochs}.csv'
-        )
-        df_yita.to_csv(save_path, index=False)
+        df_yita.to_csv(save_path,  mode='a', index=False, header=False)
         logger.info(f"Yita values saved to {save_path}")
         
         return df_yita
+    
+    def load_predictor(self) -> None:
+        """加载已训练的模型"""
+        if os.path.exists(self.model_path):
+            self.predictor = Predictor.deserialize(Path(self.model_path))
+            logger.info(f"Model loaded from {self.model_path}")
+        else:
+            raise FileNotFoundError(f"Model not found at {self.model_path}")

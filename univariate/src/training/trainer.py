@@ -78,7 +78,7 @@ class Trainer:
             ts = pd.date_range(
                 start=start_time + pd.Timedelta(hours=self.mean_model.context_length),
                 periods=len(mean_predictions[i]),
-                freq="H"
+                freq=self.mean_model.freq
             )
             timestamps.append(ts)
         
@@ -88,9 +88,11 @@ class Trainer:
             mean_predictions,
             self.mean_model.context_length,
             self.config['dataset']['name'],
-            timestamps
+            timestamps,
+            self.config.get('force_regenerate', False)
         )
         
+        print(log_mse_df)
         # 创建损失数据集
         loss_dataset = self.data_loader.create_loss_dataset(log_mse_df)
         
@@ -102,7 +104,7 @@ class Trainer:
         self.log_model.train(loss_dataset, force_retrain)
         logger.info("Log Model training completed")
     
-    def resample_yita(self, df_yita: pd.DataFrame) -> np.ndarray:
+    def resample_yita(self, yita_save_path: str) -> np.ndarray:
         """
         重采样yita值
         
@@ -112,6 +114,12 @@ class Trainer:
         Returns:
             重采样后的数组
         """
+        logger.info("Loading yita values...")
+        df_yita = pd.read_csv(
+            yita_save_path,
+            header=None
+        )
+
         logger.info(f"Resampling yita values ({self.num_samples} samples)...")
         
         yita_results = []
@@ -249,8 +257,17 @@ class Trainer:
         final_res_array = np.array(final_res)
         
         # 保存结果
-        save_path = os.path.join(self.config['paths']['predictions_dir'], 
-                                 "final_res_tensor.npy")
+        base_dir = self.config['paths']['predictions_dir']
+        base_name = "final_res_tensor"
+        i = 0
+        while True:
+            filename = f"{base_name}_{i}.npy"
+            save_path = os.path.join(base_dir, filename)
+            if not os.path.exists(save_path):
+                break
+            i += 1
+
+        # 现在save_path是可用的新文件名
         np.save(save_path, final_res_array)
         logger.info(f"Final predictions saved to {save_path}")
         

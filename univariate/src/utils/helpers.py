@@ -84,39 +84,6 @@ def load_pickle(filepath: str) -> Any:
     return data
 
 
-def calculate_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-    """
-    计算基本的评估指标
-    
-    Args:
-        y_true: 真实值
-        y_pred: 预测值
-        
-    Returns:
-        指标字典
-    """
-    from sklearn.metrics import mean_squared_error, mean_absolute_error
-    
-    mse = mean_squared_error(y_true, y_pred)
-    rmse = np.sqrt(mse)
-    mae = mean_absolute_error(y_true, y_pred)
-    
-    # MAPE (Mean Absolute Percentage Error)
-    mask = y_true != 0
-    mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
-    
-    # sMAPE (Symmetric Mean Absolute Percentage Error)
-    smape = np.mean(2 * np.abs(y_pred - y_true) / (np.abs(y_true) + np.abs(y_pred))) * 100
-    
-    return {
-        'MSE': mse,
-        'RMSE': rmse,
-        'MAE': mae,
-        'MAPE': mape,
-        'sMAPE': smape
-    }
-
-
 def sliding_window(data: np.ndarray, window_size: int, step: int = 1) -> List[np.ndarray]:
     """
     创建滑动窗口
@@ -282,3 +249,11 @@ def set_random_seed(seed: int = 42) -> None:
         torch.cuda.manual_seed_all(seed)
     
     logger.info(f"Random seed set to {seed}")
+
+def filter_metrics(metrics, select={"MAE_Coverage", "mean_wQuantileLoss", "Coverage[0.9]", "MSE", "RMSE","NRMSE", "ND"}):
+    res = {}
+    for m in select:
+        if m == "Coverage[0.9]":
+            res["Coverage Diff"] = np.abs(metrics[m].item() - 0.9)
+        res[m] = metrics[m].item()
+    return res

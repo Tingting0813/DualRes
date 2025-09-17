@@ -93,7 +93,7 @@ class DataLoader:
         """
         gluonts_data = []
         
-        for series_id, group in log_mse_data.groupby("series_id"):
+        for series_id, group in log_mse_data.groupby('series_id'):
             group_sorted = group.sort_values("timestamp")
             start = pd.to_datetime(group_sorted.iloc[0]["timestamp"])
             target = group_sorted["log_mse"].values.astype(np.float32)
