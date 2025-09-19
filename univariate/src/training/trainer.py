@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Tuple
 from tqdm import tqdm
 from gluonts.dataset.common import ListDataset
 from gluonts.dataset.field_names import FieldName
+from pandas.tseries.offsets import BDay
 import logging
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,8 @@ class Trainer:
             log_model: Log模型
         """
         self.config = config
+        self.freq = config['dataset']['freq']
+        self.dataset_name = config['dataset']['name']
         self.data_loader = data_loader
         self.mean_model = mean_model
         self.log_model = log_model
@@ -75,8 +78,14 @@ class Trainer:
         
         for i, entry in enumerate(self.data_loader.train_data):
             start_time = entry["start"].to_timestamp()
+            if self.freq == 'h':
+                lag = pd.Timedelta(hours=self.mean_model.context_length)
+            elif self.freq == 'B':   
+                lag = BDay(self.mean_model.context_length)
+            else:
+                raise ValueError(f"Invalid freq set: {self.freq}")
             ts = pd.date_range(
-                start=start_time + pd.Timedelta(hours=self.mean_model.context_length),
+                start=start_time + lag,
                 periods=len(mean_predictions[i]),
                 freq=self.mean_model.freq
             )
@@ -121,21 +130,35 @@ class Trainer:
         )
 
         logger.info(f"Resampling yita values ({self.num_samples} samples)...")
+        assert len(df_yita) == len(self.data_loader.train_data)
         
         yita_results = []
         
+
         for _ in range(self.num_samples):
             sample = []
-            for _, row in df_yita.iterrows():
-                yita_values = row.dropna().to_numpy(dtype=float)
-                s = np.random.choice(yita_values, 
-                                   size=self.mean_model.prediction_length, 
-                                   replace=True)
-                sample.append(s)
+            if self.dataset_name in {'exchange_rate_nips', 'traffic_nips', 'electricity_nips'}:
+                for entry in self.data_loader.test_data:
+                    ts_id = entry['feat_static_cat']
+                    yita_values = df_yita.iloc[ts_id[0]].dropna().to_numpy(dtype=float)
+                    s = np.random.choice(yita_values, 
+                                         size=self.mean_model.prediction_length, 
+                                         replace=True)
+                    sample.append(s)
+            else:
+                for _, row in df_yita.iterrows():
+                    yita_values = row.dropna().to_numpy(dtype=float)
+                    s = np.random.choice(yita_values, 
+                                    size=self.mean_model.prediction_length, 
+                                    replace=True)
+                    sample.append(s)
             yita_results.append(np.vstack(sample))
+            
         
         all_samples = np.stack(yita_results)
         logger.info(f"Resampled yita shape: {all_samples.shape}")
+
+        assert all_samples.shape == (self.num_samples, len(self.data_loader.test_data), self.mean_model.prediction_length), f"Expected shape ({self.num_samples}, {len(self.data_loader.test_data)}, {self.mean_model.prediction_length}), but got {all_samples.shape}"
         
         return all_samples
     
@@ -161,12 +184,19 @@ class Trainer:
         
         # 提取初始上下文 (mean model)
         for entry in self.data_loader.test_data:
+
             full_target = entry["target"]
             start = entry["start"]
             start_offset = len(full_target) - self.mean_model.context_length - self.mean_model.prediction_length
             ctx = list(full_target[-(self.mean_model.context_length + self.mean_model.prediction_length):-self.mean_model.prediction_length])
             all_series.append(ctx)
-            all_starts.append(start + pd.Timedelta(hours=start_offset))
+            if self.freq == 'h':
+                all_starts.append(start + pd.Timedelta(hours=start_offset))
+            elif self.freq == 'B':   
+                all_starts.append(start + BDay(start_offset))
+            else:
+                raise ValueError(f"Invalid freq set: {self.freq}")
+            
         
         # 准备log model的初始上下文
         log_temp_series = []
@@ -180,10 +210,16 @@ class Trainer:
                 start_offset_log = len(full_target) - self.mean_model.context_length - self.mean_model.prediction_length - self.log_model.context_length + i
                 ctx = list(full_target[-(self.mean_model.context_length + self.mean_model.prediction_length + self.log_model.context_length - i):-(self.mean_model.prediction_length + self.log_model.context_length - i)])
                 
+                if self.freq == 'h':
+                    build_lag= pd.Timedelta(hours=start_offset_log)
+                elif self.freq == 'B':   
+                    build_lag= BDay(start_offset_log)
+                else:
+                    raise ValueError(f"Invalid freq set: {self.freq}")
                 input_mean_ds = ListDataset(
-                    [{"start": start + pd.Timedelta(hours=start_offset_log),
+                    [{"start": start + build_lag,
                       "target": ctx}],
-                    freq=self.config['dataset']['freq']
+                    freq=self.freq
                 )
                 
                 forecast_it = self.mean_model.predictor.predict(input_mean_ds)
@@ -194,7 +230,12 @@ class Trainer:
                 # 计算log MSE
                 this_ts_log_mse.append(torch.log((true_v - mean_pred).pow(2) + 1e-10).item())
             
-            log_temp_starts.append(start + pd.Timedelta(hours=len(entry["target"]) - self.mean_model.prediction_length - self.log_model.context_length))
+            if self.freq == 'h':
+                log_temp_starts.append(start + pd.Timedelta(hours=len(entry["target"]) - self.mean_model.prediction_length - self.log_model.context_length))
+            elif self.freq == 'B':   
+                log_temp_starts.append(start + BDay(len(entry["target"]) - self.mean_model.prediction_length - self.log_model.context_length))
+            else:
+                raise ValueError(f"Invalid freq set: {self.freq}")
             log_temp_series.append(this_ts_log_mse)
         
         # 执行滚动预测
@@ -205,20 +246,23 @@ class Trainer:
             all_series_copy = copy.deepcopy(all_series)
             log_temp_series_copy = copy.deepcopy(log_temp_series)
             
-            for step in tqdm(range(self.mean_model.prediction_length), 
-                           desc=f"Rolling Forecast {sample_idx+1}", 
-                           leave=False):
-                
+            for step in tqdm(range(self.mean_model.prediction_length), desc=f"Rolling Forecast {sample_idx+1}", leave=False):
+                if self.freq == 'h':
+                    step_lag= pd.Timedelta(hours=step)
+                elif self.freq == 'B':   
+                    step_lag= BDay(step)
+                else:
+                    raise ValueError(f"Invalid freq set: {self.freq}")
                 # Mean model预测
                 m_input_ds = ListDataset(
                     [
                         {
-                            FieldName.START: all_starts[i] + pd.Timedelta(hours=step),
+                            FieldName.START: all_starts[i] + step_lag,
                             FieldName.TARGET: all_series_copy[i][-self.mean_model.context_length:],
                         }
                         for i in range(len(all_series_copy))
                     ],
-                    freq=self.config['dataset']['freq']
+                    freq=self.freq
                 )
                 forecast_it = self.mean_model.predictor.predict(m_input_ds)
                 forecasts = list(forecast_it)
@@ -227,12 +271,12 @@ class Trainer:
                 l_input_ds = ListDataset(
                     [
                         {
-                            FieldName.START: log_temp_starts[i] + pd.Timedelta(hours=step),
+                            FieldName.START: log_temp_starts[i] + step_lag,
                             FieldName.TARGET: log_temp_series_copy[i][-self.log_model.context_length:],
                         }
                         for i in range(len(log_temp_series_copy))
                     ],
-                    freq=self.config['dataset']['freq']
+                    freq=self.freq
                 )
                 forecast_it_l = self.log_model.predictor.predict(l_input_ds)
                 forecasts_l = list(forecast_it_l)

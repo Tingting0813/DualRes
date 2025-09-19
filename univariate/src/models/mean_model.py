@@ -12,6 +12,7 @@ from gluonts.torch.model.patch_tst import PatchTSTEstimator
 from gluonts.torch.model.d_linear import DLinearEstimator
 from gluonts.torch import DeepAREstimator
 from gluonts.dataset.common import ListDataset
+from pandas.tseries.offsets import BDay
 from tqdm import tqdm
 import logging
 
@@ -62,6 +63,17 @@ class MeanModel:
                 prediction_length=self.prediction_length,
                 freq=self.freq,
                 context_length=self.context_length,
+                trainer_kwargs={"max_epochs": self.max_epochs}
+            )
+        elif self.model_type == 'CycleNet':
+            from src.models.cyclenet import CycleNetEstimator
+            return CycleNetEstimator(
+                prediction_length=self.prediction_length,
+                context_length=self.context_length,
+                hidden_dim=self.mean_config.get('hidden_dim', 128),
+                num_cycles=self.mean_config.get('num_cycles', 3),
+                cycle_length=self.mean_config.get('cycle_length', 24),
+                dropout=self.mean_config.get('dropout', 0.1),
                 trainer_kwargs={"max_epochs": self.max_epochs}
             )
         else:
@@ -137,13 +149,17 @@ class MeanModel:
             for i in range(len(target) - self.context_length):
                 context = target[i:i+self.context_length]
                 
-                # 构造新的预测样本
+                if self.freq == 'h':
+                    set_start = start + pd.Timedelta(hours=i)
+                elif self.freq == 'B':   
+                    set_start = start + BDay(i)
+                else:
+                    raise ValueError(f"Invalid freq set: {self.freq}")
                 input_ds = ListDataset(
-                    [{"start": start + pd.Timedelta(hours=i),
-                      "target": context}],
-                    freq=self.freq
-                )
-                
+                        [{"start": set_start,
+                        "target": context}],
+                        freq=self.freq
+                    )
                 forecast_it = self.predictor.predict(input_ds)
                 forecast = next(iter(forecast_it))
                 

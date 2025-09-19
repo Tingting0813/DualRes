@@ -33,10 +33,21 @@ class DataLoader:
     def load_dataset(self) -> None:
         """加载数据集"""
         logger.info(f"Loading dataset: {self.dataset_name}")
-        self.dataset = get_dataset(self.dataset_name)
-        self.train_data = list(self.dataset.train)
-        self.test_data = list(self.dataset.test)
-        logger.info(f"Dataset loaded. Train size: {len(self.train_data)}, Test size: {len(self.test_data)}")
+        if self.dataset_name in ['m4_hourly', 'traffic_nips', 'electricity_nips', 'exchange_rate_nips', 'solar_nips']:
+            self.dataset = get_dataset(self.dataset_name)
+            self.train_data = list(self.dataset.train)
+            self.test_data = list(self.dataset.test)
+            logger.info(f"Dataset loaded. Train size: {len(self.train_data)}, Test size: {len(self.test_data)}")  
+        elif self.dataset_name in ['etth1', 'etth2']:
+            # TODO
+            self.dataset = get_dataset(self.dataset_name)
+            self.train_data = list(self.dataset.train)
+            self.test_data = list(self.dataset.test)
+            logger.info(f"Dataset loaded. Train size: {len(self.train_data)}, Test size: {len(self.test_data)}")  
+        else:
+            raise ValueError(f"Invalid dataset name: {self.dataset_name}")
+
+
         
     def get_dataset_info(self) -> Dict:
         """获取数据集信息"""

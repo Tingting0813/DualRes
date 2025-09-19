@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Tuple
 from gluonts.model.predictor import Predictor
 from gluonts.torch.model.simple_feedforward import SimpleFeedForwardEstimator
 from gluonts.dataset.common import ListDataset
+from pandas.tseries.offsets import BDay
 from tqdm import tqdm
 import logging
 
@@ -166,11 +167,18 @@ class LogModel:
             for i in range(len(target) - self.context_length):
                 context = target[i:i + self.context_length]
                 true_value = target[i + self.context_length]
-                timestamp = start + pd.Timedelta(hours=i + self.context_length)
+                if self.freq == 'h':
+                    timestamp = start + pd.Timedelta(hours=i + self.context_length)
+                    lag = pd.Timedelta(hours=i)
+                elif self.freq == 'B': 
+                    timestamp = start + BDay(i + self.context_length)  
+                    lag = BDay(i)
+                else:
+                    raise ValueError(f"Invalid freq set: {self.freq}")
                 
                 # 构造预测输入
                 input_ds = ListDataset(
-                    [{"start": start + pd.Timedelta(hours=i),
+                    [{"start": start + lag,
                       "target": context}],
                     freq=self.freq
                 )

@@ -9,6 +9,7 @@ from typing import Dict, Any, List, Tuple, Optional
 from gluonts.evaluation import Evaluator
 from gluonts.model.forecast import SampleForecast
 from statsmodels.graphics.tsaplots import plot_acf
+from pandas.tseries.offsets import BDay
 import logging
 
 logger = logging.getLogger(__name__)
@@ -149,12 +150,19 @@ class ModelEvaluator:
         true_values = true_series[context_length:context_length+window_size]
         
         # 时间索引
-        true_index = pd.date_range(start=start_time + pd.Timedelta(hours=context_length),
+        freq = self.config['dataset']['freq']
+        if freq == 'h':
+            lag = pd.Timedelta(hours=context_length)
+        elif freq == 'B':   
+            lag = BDay(context_length)
+        else:
+            raise ValueError(f"Invalid freq set: {freq}")
+        true_index = pd.date_range(start=start_time + lag,
                                   periods=len(true_values), 
-                                  freq=self.config['dataset']['freq'])
-        pred_index = pd.date_range(start=start_time + pd.Timedelta(hours=context_length),
+                                  freq=freq)
+        pred_index = pd.date_range(start=start_time + lag,
                                   periods=len(pred_values), 
-                                  freq=self.config['dataset']['freq'])
+                                  freq=freq)
         
         # 画图
         plt.figure(figsize=(12, 5))
