@@ -1,8 +1,8 @@
 import torch
 import torch.nn as nn
 from typing import List, Optional, Dict, Any, Tuple
-import pytorch_lightning as pl
 import numpy as np
+import lightning.pytorch as L
 
 # GluonTS导入
 from gluonts.core.component import validated
@@ -10,25 +10,8 @@ from gluonts.dataset.field_names import FieldName
 from gluonts.torch.model.estimator import PyTorchLightningEstimator
 from gluonts.torch.model.predictor import PyTorchPredictor
 from gluonts.torch.distributions import StudentTOutput
-
-
-class DistributionLoss:
-    """分布损失基类"""
-    def __call__(self, input: torch.distributions.Distribution, target: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
-
-
-class NegativeLogLikelihood(DistributionLoss):
-    """负对数似然损失"""
-    def __init__(self, beta: float = 0.0):
-        self.beta = beta
-    
-    def __call__(self, input: torch.distributions.Distribution, target: torch.Tensor) -> torch.Tensor:
-        nll = -input.log_prob(target)
-        if self.beta > 0.0:
-            variance = input.variance
-            nll = nll * (variance.detach() ** self.beta)
-        return nll.mean()
+from gluonts.torch.distributions.distribution_output import DistributionOutput
+from gluonts.model.forecast_generator import DistributionForecastGenerator
 
 
 class ResidualCycleForecasting(nn.Module):
@@ -57,7 +40,7 @@ class ResidualCycleForecasting(nn.Module):
 
 
 class CycleNetModel(nn.Module):
-    """CycleNet主干网络"""
+    """CycleNet主干网络 - 改进版，输出分布参数"""
     def __init__(
         self,
         d_model: int,
@@ -66,83 +49,57 @@ class CycleNetModel(nn.Module):
         context_length: int,
         backbone_type: str = "linear",
         hidden_dim: int = 512,
+        distr_output: DistributionOutput = StudentTOutput(),
     ):
         super().__init__()
         
-        # 强制转换为int，避免传入tensor或其他类型
         self.d_model = int(d_model)
         self.cycle_length = int(cycle_length)
         self.prediction_length = int(prediction_length)
         self.context_length = int(context_length)
         self.backbone_type = str(backbone_type)
+        self.distr_output = distr_output
         
-        # 打印调试信息
-        print(f"CycleNetModel init with:")
-        print(f"  context_length: {self.context_length} (type: {type(self.context_length)})")
-        print(f"  prediction_length: {self.prediction_length} (type: {type(self.prediction_length)})")
-        print(f"  hidden_dim: {hidden_dim} (type: {type(hidden_dim)})")
-        print(f"  backbone_type: {self.backbone_type}")
-        
-        # 确保hidden_dim也是int
         hidden_dim = int(hidden_dim)
         
         # RCF 模块
         self.rcf = ResidualCycleForecasting(self.cycle_length, self.d_model)
         
-        # 背景网络 - 小心创建Linear层
-        try:
-            if backbone_type == "linear":
-                print(f"Creating Linear layer: in={self.context_length}, out={self.prediction_length}")
-                self.backbone = nn.Linear(self.context_length, self.prediction_length)
-            elif backbone_type == "mlp":
-                print(f"Creating MLP layers: {self.context_length} -> {hidden_dim} -> {self.prediction_length}")
-                self.backbone = nn.Sequential(
-                    nn.Linear(self.context_length, hidden_dim),
-                    nn.ReLU(),
-                    nn.Linear(hidden_dim, self.prediction_length)
-                )
-            else:
-                raise ValueError("backbone_type must be 'linear' or 'mlp'")
-            print("✅ Backbone created successfully")
-        except Exception as e:
-            print(f"❌ Error creating backbone: {e}")
-            print(f"   context_length: {self.context_length} ({type(self.context_length)})")
-            print(f"   prediction_length: {self.prediction_length} ({type(self.prediction_length)})")
-            print(f"   hidden_dim: {hidden_dim} ({type(hidden_dim)})")
-            raise
+        # 背景网络 - 输出分布参数
+        args_dim = self.distr_output.args_dim
+        self.output_dim = sum(args_dim.values())
+        
+        if backbone_type == "linear":
+            self.backbone = nn.Linear(self.context_length, self.prediction_length * self.output_dim)
+        elif backbone_type == "mlp":
+            self.backbone = nn.Sequential(
+                nn.Linear(self.context_length, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, self.prediction_length * self.output_dim)
+            )
+        else:
+            raise ValueError("backbone_type must be 'linear' or 'mlp'")
     
     def generate_cycle_indices(self, batch_size: int, seq_len: int, device: torch.device, start_idx: int = 0) -> torch.Tensor:
         indices = torch.arange(start_idx, start_idx + seq_len, device=device).unsqueeze(0).repeat(batch_size, 1)
         cycle_indices = indices % self.cycle_length
         return cycle_indices
     
-    def forward(self, past_target: torch.Tensor) -> torch.Tensor:
-        # 转换为torch张量（如果是numpy数组）
+    def forward(self, past_target: torch.Tensor) -> Tuple[torch.Tensor, ...]:
+        # 处理输入维度
         if isinstance(past_target, np.ndarray):
             past_target = torch.from_numpy(past_target).float()
         
-        # 确保数据在正确的设备上
         if hasattr(self, 'device'):
             past_target = past_target.to(self.device)
         elif next(self.parameters()).is_cuda:
             past_target = past_target.cuda()
         
-        # 处理输入维度：GluonTS可能传入2D或3D数据
         if past_target.dim() == 2:
-            # [batch_size, seq_len] -> [batch_size, seq_len, 1]
             past_target = past_target.unsqueeze(-1)
-        elif past_target.dim() == 3:
-            # 已经是3D，直接使用
-            pass
-        else:
-            raise ValueError(f"Expected 2D or 3D input, got {past_target.dim()}D")
-            
+        
         batch_size, context_length, d_model = past_target.shape
         device = past_target.device
-        
-        # 验证输入长度与模型期望是否匹配
-        if context_length != self.context_length:
-            raise ValueError(f"Input context length {context_length} doesn't match model context length {self.context_length}")
         
         # 生成历史数据的周期索引
         past_cycle_indices = self.generate_cycle_indices(batch_size, context_length, device)
@@ -150,38 +107,48 @@ class CycleNetModel(nn.Module):
         # 使用RCF分解历史数据
         past_cycle_components, past_residuals = self.rcf(past_target, past_cycle_indices)
         
-        # 对每个变量独立进行预测
+        # 对每个变量独立进行预测（获取分布参数）
         predictions = []
         for d in range(d_model):
             residual_d = past_residuals[:, :, d]  # [batch_size, context_length]
-            future_residual_d = self.backbone(residual_d)  # [batch_size, prediction_length]
-            predictions.append(future_residual_d)
+            output_d = self.backbone(residual_d)  # [batch_size, prediction_length * output_dim]
+            # Reshape to [batch_size, prediction_length, output_dim]
+            output_d = output_d.view(batch_size, self.prediction_length, self.output_dim)
+            predictions.append(output_d)
         
-        future_residuals = torch.stack(predictions, dim=-1)  # [batch_size, prediction_length, d_model]
+        # Stack predictions: [batch_size, prediction_length, d_model, output_dim]
+        # 对于单变量，简化为 [batch_size, prediction_length, output_dim]
+        if d_model == 1:
+            distr_params = predictions[0]
+        else:
+            distr_params = torch.stack(predictions, dim=2)
         
-        # 生成未来的周期索引
+        # 生成未来的周期索引并获取周期分量（用于后处理，但不直接加到分布参数上）
         future_cycle_indices = self.generate_cycle_indices(
             batch_size, self.prediction_length, device, start_idx=context_length
         )
-        
-        # 获取未来的周期分量
         future_cycle_components = self.rcf.learnable_cycles[future_cycle_indices.long()]
         
-        # 最终预测 = 未来周期分量 + 预测的残差
-        final_predictions = future_cycle_components + future_residuals
+        # 将参数分解为分布所需的各个部分
+        # 对于StudentT，需要 loc, scale, df
+        distr_args = self.distr_output.domain_map(*distr_params.chunk(self.output_dim, dim=-1))
         
-        # 确保输出维度正确：如果输入是2D，输出也应该是2D
-        if final_predictions.shape[-1] == 1:
-            final_predictions = final_predictions.squeeze(-1)  # [batch_size, pred_len, 1] -> [batch_size, pred_len]
+        # 将周期分量加到loc参数上
+        loc, scale, df = distr_args
+        loc = loc.squeeze(-1) if loc.dim() > 2 else loc
+        scale = scale.squeeze(-1) if scale.dim() > 2 else scale
+        df = df.squeeze(-1) if df.dim() > 2 else df
         
-        return final_predictions
+        # 添加周期分量到位置参数
+        if future_cycle_components.dim() == 3 and future_cycle_components.shape[-1] == 1:
+            future_cycle_components = future_cycle_components.squeeze(-1)
+        loc = loc + future_cycle_components
+        
+        return (df, loc, scale)
 
-
-# 关键修复：创建一个原生的LightningModule，避免导入问题
-import lightning.pytorch as L  # 使用原生导入
 
 class CycleNetLightningModule(L.LightningModule):
-    """使用原生Lightning导入的CycleNet模块"""
+    """CycleNet Lightning模块 - 使用分布输出"""
     
     def __init__(
         self,
@@ -192,12 +159,12 @@ class CycleNetLightningModule(L.LightningModule):
         backbone_type: str = "linear",
         hidden_dim: int = 512,
         lr: float = 1e-3,
-        loss: Optional[DistributionLoss] = None,
+        distr_output: DistributionOutput = StudentTOutput(),
     ):
         super().__init__()
         
         # 保存超参数
-        self.save_hyperparameters()
+        self.save_hyperparameters(ignore=['distr_output'])
         
         # 模型参数
         self.d_model = d_model
@@ -207,7 +174,7 @@ class CycleNetLightningModule(L.LightningModule):
         self.backbone_type = backbone_type
         self.hidden_dim = hidden_dim
         self.lr = lr
-        self.loss = loss or NegativeLogLikelihood()
+        self.distr_output = distr_output
         
         # 创建模型
         self.model = CycleNetModel(
@@ -217,12 +184,10 @@ class CycleNetLightningModule(L.LightningModule):
             context_length=context_length,
             backbone_type=backbone_type,
             hidden_dim=hidden_dim,
+            distr_output=distr_output,
         )
         
-        # 分布输出层
-        self.distr_output = StudentTOutput()
-        
-    def forward(self, past_target: torch.Tensor) -> torch.Tensor:
+    def forward(self, past_target: torch.Tensor) -> Tuple[torch.Tensor, ...]:
         return self.model(past_target)
     
     def training_step(self, batch, batch_idx):
@@ -239,34 +204,16 @@ class CycleNetLightningModule(L.LightningModule):
         past_target = past_target.to(self.device)
         future_target = future_target.to(self.device)
         
-        # 确保输入维度正确
-        if past_target.dim() == 2:
-            past_target = past_target.unsqueeze(-1)
-        if future_target.dim() == 2:
-            future_target = future_target.unsqueeze(-1)
+        # 获取分布参数
+        distr_args = self(past_target)
         
-        predictions = self(past_target)
+        # 创建分布
+        distr = self.distr_output.distribution(distr_args)
         
-        # 确保predictions的维度正确
-        if predictions.dim() == 3:
-            predictions = predictions.squeeze(-1)
-        elif predictions.dim() == 1:
-            predictions = predictions.unsqueeze(0)
+        # 计算负对数似然损失
+        loss = -distr.log_prob(future_target).mean()
         
-        # 同样确保future_target的维度匹配
-        if future_target.dim() == 3:
-            future_target = future_target.squeeze(-1)
-        elif future_target.dim() == 1:
-            future_target = future_target.unsqueeze(0)
-        
-        # 获取batch size
-        batch_size = predictions.shape[0]
-        
-        # 使用简单的MSE损失，避开GluonTS分布输出的问题
-        mse_loss = nn.MSELoss()
-        loss = mse_loss(predictions, future_target)
-        
-        # 明确指定batch_size
+        batch_size = past_target.shape[0]
         self.log("train_loss", loss, prog_bar=True, on_step=True, on_epoch=True, batch_size=batch_size)
         return loss
     
@@ -284,74 +231,43 @@ class CycleNetLightningModule(L.LightningModule):
         past_target = past_target.to(self.device)
         future_target = future_target.to(self.device)
         
-        # 确保输入维度正确
-        if past_target.dim() == 2:
-            past_target = past_target.unsqueeze(-1)
-        if future_target.dim() == 2:
-            future_target = future_target.unsqueeze(-1)
+        # 获取分布参数
+        distr_args = self(past_target)
         
-        predictions = self(past_target)
+        # 创建分布
+        distr = self.distr_output.distribution(distr_args)
         
-        # 确保predictions的维度正确
-        if predictions.dim() == 3:
-            predictions = predictions.squeeze(-1)
-        elif predictions.dim() == 1:
-            predictions = predictions.unsqueeze(0)
+        # 计算负对数似然损失
+        loss = -distr.log_prob(future_target).mean()
         
-        # 同样确保future_target的维度匹配
-        if future_target.dim() == 3:
-            future_target = future_target.squeeze(-1)
-        elif future_target.dim() == 1:
-            future_target = future_target.unsqueeze(0)
-        
-        # 获取batch size
-        batch_size = predictions.shape[0]
-        
-        # 使用简单的MSE损失
-        mse_loss = nn.MSELoss()
-        loss = mse_loss(predictions, future_target)
-        
-        # 明确指定batch_size
+        batch_size = past_target.shape[0]
         self.log("val_loss", loss, prog_bar=True, on_step=False, on_epoch=True, batch_size=batch_size)
         return loss
     
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.lr)
+
+
+class CycleNetPredictionNetwork(nn.Module):
+    """预测网络包装器 - 处理分布输出"""
+    def __init__(self, model, distr_output):
+        super().__init__()
+        self.model = model
+        self.distr_output = distr_output
     
-    def predict_step(self, batch, batch_idx):
-        past_target = batch["past_target"]
+    def forward(self, past_target, past_observed_values=None):
+        # 获取分布参数
+        distr_args = self.model(past_target)
         
-        # 转换为torch张量（如果是numpy数组）
-        if isinstance(past_target, np.ndarray):
-            past_target = torch.from_numpy(past_target).float()
+        # 创建分布
+        distr = self.distr_output.distribution(distr_args)
         
-        # 确保数据在正确的设备上
-        past_target = past_target.to(self.device)
-        
-        # 确保输入维度正确
-        if past_target.dim() == 2:
-            past_target = past_target.unsqueeze(-1)
-        
-        predictions = self(past_target)
-        
-        # 确保输出维度正确：SampleForecast期望[batch_size, prediction_length]或[num_samples, batch_size, prediction_length]
-        if predictions.dim() == 3:
-            predictions = predictions.squeeze(-1)
-        elif predictions.dim() == 1:
-            predictions = predictions.unsqueeze(0)
-        
-        # 为了兼容SampleForecastGenerator，我们需要添加samples维度
-        # 格式应该是 [num_samples, batch_size, prediction_length]
-        if predictions.dim() == 2:  # [batch_size, prediction_length]
-            # 添加样本维度，创建100个相同的样本
-            num_samples = 100
-            predictions = predictions.unsqueeze(0).repeat(num_samples, 1, 1)  # [100, batch_size, prediction_length]
-        
-        return predictions
+        # 返回分布（DistributionForecastGenerator会处理采样）
+        return distr, distr_args[-1], distr_args[-2] if len(distr_args) > 2 else None
 
 
 class CycleNetEstimator(PyTorchLightningEstimator):
-    """CycleNet估计器 - 兼容性修复版本"""
+    """CycleNet估计器 - 标准GluonTS实现"""
     
     @validated()
     def __init__(
@@ -363,13 +279,13 @@ class CycleNetEstimator(PyTorchLightningEstimator):
         backbone_type: str = "linear",
         hidden_dim: int = 512,
         lr: float = 1e-3,
-        loss: Optional[DistributionLoss] = None,
+        distr_output: DistributionOutput = StudentTOutput(),
         batch_size: int = 32,
         num_batches_per_epoch: int = 50,
         trainer_kwargs: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
-        # 确保所有参数都是正确的类型
+        # 确保参数类型正确
         self.prediction_length = int(prediction_length)
         self.context_length = int(context_length)
         self.cycle_length = int(cycle_length)
@@ -379,7 +295,7 @@ class CycleNetEstimator(PyTorchLightningEstimator):
         self.batch_size = int(batch_size)
         self.num_batches_per_epoch = int(num_batches_per_epoch)
         self.freq = str(freq)
-        self.loss = loss or NegativeLogLikelihood()
+        self.distr_output = distr_output
         
         # 设置默认的trainer参数
         default_trainer_kwargs = {
@@ -391,7 +307,6 @@ class CycleNetEstimator(PyTorchLightningEstimator):
         if trainer_kwargs is not None:
             default_trainer_kwargs.update(trainer_kwargs)
         
-        # 只传递PyTorchLightningEstimator接受的参数
         super().__init__(trainer_kwargs=default_trainer_kwargs)
     
     def create_transformation(self):
@@ -416,29 +331,17 @@ class CycleNetEstimator(PyTorchLightningEstimator):
         ])
     
     def create_lightning_module(self):
-        """创建Lightning模块 - 修复版本"""
-        # 打印调试信息
-        print(f"Creating Lightning module with:")
-        print(f"  d_model=1")
-        print(f"  cycle_length={self.cycle_length} (type: {type(self.cycle_length)})")
-        print(f"  prediction_length={self.prediction_length} (type: {type(self.prediction_length)})")
-        print(f"  context_length={self.context_length} (type: {type(self.context_length)})")
-        print(f"  backbone_type={self.backbone_type}")
-        print(f"  hidden_dim={self.hidden_dim} (type: {type(self.hidden_dim)})")
-        
-        # 直接返回我们的模块，不进行额外的类型转换
-        module = CycleNetLightningModule(
-            d_model=1,
+        """创建Lightning模块"""
+        return CycleNetLightningModule(
+            d_model=1,  # 单变量
             cycle_length=self.cycle_length,
             prediction_length=self.prediction_length,
             context_length=self.context_length,
             backbone_type=self.backbone_type,
             hidden_dim=self.hidden_dim,
             lr=self.lr,
-            loss=self.loss,
+            distr_output=self.distr_output,
         )
-        
-        return module
     
     def create_training_data_loader(self, data, module, shuffle_buffer_length=None, **kwargs):
         """创建训练数据加载器"""
@@ -506,7 +409,6 @@ class CycleNetEstimator(PyTorchLightningEstimator):
             InstanceSplitter,
             TestSplitSampler,
         )
-        from gluonts.model.forecast_generator import DistributionForecastGenerator
         
         prediction_splitter = InstanceSplitter(
             target_field=FieldName.TARGET,
@@ -519,83 +421,19 @@ class CycleNetEstimator(PyTorchLightningEstimator):
             time_series_fields=[FieldName.OBSERVED_VALUES],
         )
         
-        # 创建一个包装器来确保正确的输出格式
-        class CycleNetPredictionWrapper(nn.Module):
-            def __init__(self, original_model, prediction_length):
-                super().__init__()
-                self.original_model = original_model
-                self.prediction_length = prediction_length
-            
-            def forward(self, past_target):
-                # 调用原始模型
-                predictions = self.original_model(past_target)
-                
-                # 确保输出是正确的格式：[batch_size, prediction_length]
-                if predictions.dim() == 1:
-                    predictions = predictions.unsqueeze(0)  # [prediction_length] -> [1, prediction_length]
-                elif predictions.dim() == 3:
-                    predictions = predictions.squeeze(-1)  # [batch_size, prediction_length, 1] -> [batch_size, prediction_length]
-                
-                # 为了生成样本，我们复制预测多次
-                batch_size = predictions.shape[0]
-                num_samples = 100
-                
-                # 创建样本：[num_samples, batch_size, prediction_length]
-                samples = predictions.unsqueeze(0).repeat(num_samples, 1, 1)
-                
-                return samples
-        
-        # 包装训练好的网络
-        wrapped_network = CycleNetPredictionWrapper(trained_network, self.prediction_length)
-        
-        # 尝试不同的参数组合来兼容GluonTS 0.16.2
-        try:
-            return PyTorchPredictor(
-                input_transform=transformation + prediction_splitter,
-                prediction_net=wrapped_network,
-                prediction_length=self.prediction_length,
-                input_names=["past_target"],
-                batch_size=self.batch_size,
-                forecast_generator=DistributionForecastGenerator(),
-            )
-        except Exception as e:
-            print(f"Warning: trying simpler predictor: {e}")
-            return PyTorchPredictor(
-                input_transform=transformation + prediction_splitter,
-                prediction_net=wrapped_network,
-                prediction_length=self.prediction_length,
-                input_names=["past_target"],
-                batch_size=self.batch_size,
-            )
-
-
-# 使用示例
-if __name__ == "__main__":
-    # 测试代码
-    print("CycleNet 兼容性修复版本已加载")
-    
-    # 简单测试
-    try:
-        import lightning.pytorch as L
-        
-        # 测试模块创建
-        module = CycleNetLightningModule(
-            d_model=1,
-            cycle_length=24,
-            prediction_length=24,
-            context_length=336
+        # 包装网络以处理分布输出
+        prediction_network = CycleNetPredictionNetwork(
+            trained_network, 
+            self.distr_output
         )
-        print(f"✅ Lightning模块创建成功: {type(module)}")
-        print(f"✅ 是否为LightningModule: {isinstance(module, L.LightningModule)}")
         
-        # 测试估计器创建
-        estimator = CycleNetEstimator(
-            prediction_length=24,
-            context_length=336,
-            cycle_length=24,
-            freq="H"
+        # 使用标准的DistributionForecastGenerator
+        return PyTorchPredictor(
+            input_transform=transformation + prediction_splitter,
+            prediction_net=prediction_network,
+            prediction_length=self.prediction_length,
+            input_names=["past_target", "past_observed_values"],
+            batch_size=self.batch_size,
+            forecast_generator=DistributionForecastGenerator(self.distr_output),
+            device="auto",
         )
-        print("✅ CycleNet估计器创建成功")
-        
-    except Exception as e:
-        print(f"❌ 测试失败: {e}")

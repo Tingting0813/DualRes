@@ -6,6 +6,7 @@ import yaml
 import argparse
 import logging
 from pathlib import Path
+import warnings
 
 # 导入自定义模块
 from src.data.data_loader import DataLoader
@@ -35,6 +36,9 @@ def main(args):
     # 设置日志
     setup_logging(args.log_level)
     logger = logging.getLogger(__name__)
+
+    warnings.filterwarnings("ignore", category=FutureWarning)
+    warnings.filterwarnings("ignore", category=UserWarning)
     
     # 加载配置
     logger.info(f"Loading config from {args.config}")
@@ -144,7 +148,7 @@ def main(args):
         
         # 执行滚动预测
         logger.info("Performing rolling forecast...")
-        final_res = trainer.rolling_forecast(all_samples)
+        final_res = trainer.rolling_forecast(all_samples, force_reforcast=args.reforcast)
         
         # 评估最终结果
         if args.evaluate:
@@ -197,6 +201,8 @@ if __name__ == "__main__":
                        help="Generate visualizations")
     parser.add_argument("--series-idx", type=int, default=0,
                        help="Time series index for visualization")
+    parser.add_argument("--reforcast", action="store_true", default=False,
+                       help="force rolling forcast one more time")
     parser.add_argument("--log-level", type=str, default="INFO",
                        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        help="Logging level")

@@ -166,7 +166,7 @@ class Trainer:
         """Tamed exponential function"""
         return np.exp(x)  # 可以根据需要修改为更复杂的版本
     
-    def rolling_forecast(self, all_samples: np.ndarray) -> np.ndarray:
+    def rolling_forecast(self, all_samples: np.ndarray, force_reforcast: bool) -> np.ndarray:
         """
         执行滚动预测
         
@@ -177,6 +177,15 @@ class Trainer:
             最终预测结果
         """
         logger.info("Starting rolling forecast...")
+
+        base_dir = self.config['paths']['predictions_dir']
+        base_name = "final_res_tensor"
+
+        if force_reforcast == False:
+            first_forcast_path = os.path.join(base_dir, f"{base_name}_0.npy")
+            if  os.path.exists(first_forcast_path):
+                logger.info("not reforcast and has one")
+                return  np.load(first_forcast_path)
         
         # 准备初始上下文
         all_series = []
@@ -301,8 +310,6 @@ class Trainer:
         final_res_array = np.array(final_res)
         
         # 保存结果
-        base_dir = self.config['paths']['predictions_dir']
-        base_name = "final_res_tensor"
         i = 0
         while True:
             filename = f"{base_name}_{i}.npy"
