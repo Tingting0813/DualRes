@@ -137,7 +137,7 @@ class Trainer:
 
         for _ in range(self.num_samples):
             sample = []
-            if self.dataset_name in {'exchange_rate_nips', 'traffic_nips', 'electricity_nips'}:
+            if self.dataset_name in {'exchange_rate_nips', 'traffic_nips', 'electricity_nips', 'etth1', 'etth2'}:
                 for entry in self.data_loader.test_data:
                     ts_id = entry['feat_static_cat']
                     yita_values = df_yita.iloc[ts_id[0]].dropna().to_numpy(dtype=float)

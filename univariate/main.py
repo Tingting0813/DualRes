@@ -122,7 +122,7 @@ def main(args):
         yita_df = log_model.calculate_yita(mean_data_df, log_predictions_df)
         
         # 可视化ACF
-        if args.visualize:
+        if args.visualize and config['dataset']['name'] not in ['etth1', 'etth2']:
             logger.info("Plotting ACF...")
             evaluator.plot_acf(
                 mean_data_df,

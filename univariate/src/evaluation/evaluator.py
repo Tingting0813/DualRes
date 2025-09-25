@@ -253,7 +253,7 @@ class ModelEvaluator:
         true_values = true_target[-display_length:]
         
         # 绘图
-        plt.figure(figsize=(12, 6))
+        plt.figure(figsize=(8, 5))
         plt.plot(x_time, true_values, color='#004773', label='True values')
         plt.plot(x_pred, mean, color='#ce0300', marker='.', label='Prediction mean')
         plt.fill_between(x_pred, p5, p95, alpha=0.40, label="90% Interval", color='#fa918e')
@@ -269,9 +269,11 @@ class ModelEvaluator:
         plt.xticks(rotation=45)
         
         plt.xlabel('Date')
+        plt.xticks(fontsize = 14)
         plt.ylabel('Value')
-        plt.title(f'Forecast for Time Series {series_idx}')
-        plt.legend()
+        plt.xticks(fontsize = 14)
+        #plt.title(f'Forecast for Time Series {series_idx}')
+        plt.legend(fontsize=14)
         plt.grid(True, alpha=0.3)
         plt.tight_layout()
         

@@ -10,6 +10,7 @@ from gluonts.model.predictor import Predictor
 from gluonts.evaluation import make_evaluation_predictions
 from gluonts.torch.model.patch_tst import PatchTSTEstimator
 from gluonts.torch.model.d_linear import DLinearEstimator
+from gluonts.torch.model.timemixer import TimeMixerEstimator
 from gluonts.torch import DeepAREstimator
 from gluonts.dataset.common import ListDataset
 from pandas.tseries.offsets import BDay
@@ -65,15 +66,11 @@ class MeanModel:
                 context_length=self.context_length,
                 trainer_kwargs={"max_epochs": self.max_epochs}
             )
-        elif self.model_type == 'CycleNet':
-            from src.models.cyclenet import CycleNetEstimator
-            return CycleNetEstimator(
+        elif self.model_type == 'TimeMixer':
+            return TimeMixerEstimator(
                 prediction_length=self.prediction_length,
+                # freq=self.freq,
                 context_length=self.context_length,
-                hidden_dim=self.mean_config.get('hidden_dim', 128),
-                num_cycles=self.mean_config.get('num_cycles', 3),
-                cycle_length=self.mean_config.get('cycle_length', 24),
-                dropout=self.mean_config.get('dropout', 0.1),
                 trainer_kwargs={"max_epochs": self.max_epochs}
             )
         else:
